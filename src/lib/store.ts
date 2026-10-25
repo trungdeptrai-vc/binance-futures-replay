@@ -5,9 +5,12 @@ import {
   type Interval,
   type Point,
   type Speed,
+  type Drawing,
+  type RectDrawing,
   type Trendline,
   POPULAR_SYMBOLS,
   isInterval,
+  isRect,
   nearestIndex,
   newId,
   normalizeSymbol,
@@ -17,9 +20,9 @@ import {
 import type { MarketSource } from "@/lib/vision-load";
 
 const STORAGE_KEY = "replay-terminal-v1";
-const EMPTY_LINES: Trendline[] = [];
+const EMPTY_LINES: Drawing[] = [];
 
-export type Tool = "cursor" | "trend" | "pick";
+export type Tool = "cursor" | "trend" | "rect" | "pick";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
 type Persisted = {
@@ -29,7 +32,7 @@ type Persisted = {
   showEma34: boolean;
   showEma89: boolean;
   magnet: boolean;
-  drawings: Record<string, Trendline[]>;
+  drawings: Record<string, Drawing[]>;
 };
 
 type State = Persisted & {
@@ -68,6 +71,7 @@ type Actions = {
   toggleMagnet: () => void;
   selectLine: (id: string | null) => void;
   addLine: (a: Point, b: Point) => void;
+  addRect: (a: Point, b: Point) => void;
   updateLine: (id: string, patch: Partial<Trendline>) => void;
   deleteSelected: () => void;
   undoLine: () => void;
@@ -90,17 +94,18 @@ function isPoint(value: unknown): value is Point {
   return Number.isFinite(point.time) && Number.isFinite(point.price);
 }
 
-function sanitizeDrawings(value: unknown): Record<string, Trendline[]> {
+function sanitizeDrawings(value: unknown): Record<string, Drawing[]> {
   if (!value || typeof value !== "object") return {};
-  const out: Record<string, Trendline[]> = {};
+  const out: Record<string, Drawing[]> = {};
   for (const [key, lines] of Object.entries(value as Record<string, unknown>)) {
     if (!Array.isArray(lines)) continue;
-    const clean: Trendline[] = [];
+    const clean: Drawing[] = [];
     for (const line of lines) {
       if (!line || typeof line !== "object") continue;
-      const item = line as Trendline;
+      const item = line as Drawing;
       if (!isPoint(item.a) || !isPoint(item.b) || typeof item.id !== "string") continue;
-      clean.push({ id: item.id, a: item.a, b: item.b, extend: Boolean(item.extend) });
+      if (isRect(item)) clean.push({ id: item.id, kind: "rect", a: item.a, b: item.b });
+      else clean.push({ id: item.id, a: item.a, b: item.b, extend: Boolean((item as Trendline).extend) });
     }
     if (clean.length) out[key] = clean.slice(-80);
   }
@@ -295,11 +300,23 @@ export const useTerminal = create<State & Actions>((set, get) => ({
   addLine: (a, b) => {
     const state = get();
     const key = pairKey(state.symbol, state.interval);
-    const line: Trendline = { id: newId(), a, b, extend: true };
+    const line: Trendline = { id: newId(), a, b, extend: false };
     const prev = state.drawings[key] ?? EMPTY_LINES;
     set({
       drawings: { ...state.drawings, [key]: [...prev, line].slice(-80) },
       selectedId: line.id,
+      tool: "cursor",
+    });
+  },
+
+  addRect: (a, b) => {
+    const state = get();
+    const key = pairKey(state.symbol, state.interval);
+    const rect: RectDrawing = { id: newId(), kind: "rect", a, b };
+    const prev = state.drawings[key] ?? EMPTY_LINES;
+    set({
+      drawings: { ...state.drawings, [key]: [...prev, rect].slice(-80) },
+      selectedId: rect.id,
       tool: "cursor",
     });
   },
@@ -311,7 +328,11 @@ export const useTerminal = create<State & Actions>((set, get) => ({
     set({
       drawings: {
         ...state.drawings,
-        [key]: prev.map((line) => (line.id === id ? { ...line, ...patch, id: line.id } : line)),
+        [key]: prev.map((line) => {
+          if (line.id !== id) return line;
+          if (isRect(line)) return { ...line, a: patch.a ?? line.a, b: patch.b ?? line.b };
+          return { ...line, ...patch, id: line.id };
+        }),
       },
     });
   },
@@ -347,11 +368,11 @@ export const useTerminal = create<State & Actions>((set, get) => ({
     if (!state.selectedId) return;
     const key = pairKey(state.symbol, state.interval);
     const line = (state.drawings[key] ?? EMPTY_LINES).find((item) => item.id === state.selectedId);
-    if (!line) return;
+    if (!line || isRect(line)) return;
     get().updateLine(line.id, { extend: !line.extend });
   },
 }));
 
-export function useActiveLines(): Trendline[] {
+export function useActiveLines(): Drawing[] {
   return useTerminal((state) => state.drawings[pairKey(state.symbol, state.interval)] ?? EMPTY_LINES);
 }

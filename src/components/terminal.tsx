@@ -38,6 +38,8 @@ export function Terminal() {
         state.undoLine();
       } else if (event.key === "t" || event.key === "T") {
         state.setTool(state.tool === "trend" ? "cursor" : "trend");
+      } else if (event.key === "r" || event.key === "R") {
+        state.setTool(state.tool === "rect" ? "cursor" : "rect");
       }
     };
     window.addEventListener("keydown", onKey);

@@ -124,7 +124,7 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
           <li>Kéo thanh thời gian hoặc bấm chọn nến. Mọi nến phía sau bị giấu — giống Bar Replay.</li>
           <li>Phát để mở từng nến. Tốc độ 1× đến 10×. Ngẫu nhiên chọn một điểm không thiên lệch.</li>
           <li>EMA 34 và EMA 89 chỉ tính trên các nến đã mở, không dùng dữ liệu tương lai.</li>
-          <li>Trendline: hai cú nhấp. Nam châm hút về O/H/L/C. Kéo dài để đường chạy về bên phải khi nến mới hiện ra.</li>
+          <li>Trendline nối đúng hai điểm, không phải tia. Hình chữ nhật lấy hai góc đối nhau. Nam châm bật thì con trỏ hút vào O/H/L/C; tắt thì soi giá tự do.</li>
           <li>Nguồn là Binance USDT-M. Nếu API trực tiếp bị chặn theo vùng, app dùng kho công khai data.binance.vision, thường đến hết hôm qua. Khung 1W được ghép từ nến ngày, mở cửa thứ Hai UTC.</li>
         </ul>
         <button

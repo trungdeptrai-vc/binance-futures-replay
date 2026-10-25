@@ -13,6 +13,7 @@ import {
   panView,
   pinView,
   priceOf,
+  rectPixels,
   segmentDistance,
   tickDigits,
   timeToLogical,
@@ -29,12 +30,15 @@ import {
   formatPrice,
   formatVolume,
   INTERVAL_LABEL,
+  isRect,
   type Candle,
+  type Drawing,
   type Interval,
   type Point,
-  type Trendline,
 } from "@/lib/market";
 import { useActiveLines, useTerminal, type Tool } from "@/lib/store";
+
+type Handle = "a" | "b" | "c" | "d" | "body";
 
 type Drag =
   | { kind: "pan"; startX: number; startY: number; orig: View }
@@ -43,8 +47,8 @@ type Drag =
       kind: "line";
       startX: number;
       startY: number;
-      part: "a" | "b" | "body";
-      origin: Trendline;
+      part: Handle;
+      origin: Drawing;
       startLogical: number;
       startPrice: number;
     };
@@ -164,7 +168,8 @@ export function ChartStage() {
   const [hover, setHover] = useState<number | null>(null);
   const [draft, setDraft] = useState<Point | null>(null);
   const [preview, setPreview] = useState<Point | null>(null);
-  const [ghost, setGhost] = useState<Trendline | null>(null);
+  const [ghost, setGhost] = useState<Drawing | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<Drag | null>(null);
   const uid = useId().replace(/:/g, "");
 
@@ -189,6 +194,7 @@ export function ChartStage() {
   const setTool = useTerminal((s) => s.setTool);
   const pause = useTerminal((s) => s.pause);
   const addLine = useTerminal((s) => s.addLine);
+  const addRect = useTerminal((s) => s.addRect);
   const updateLine = useTerminal((s) => s.updateLine);
   const selectLine = useTerminal((s) => s.selectLine);
   const reload = useTerminal((s) => s.reload);
@@ -231,7 +237,7 @@ export function ChartStage() {
   }, [cursor, follow, synced, tool]);
 
   useEffect(() => {
-    if (tool !== "trend") {
+    if (tool !== "trend" && tool !== "rect") {
       setDraft(null);
       setPreview(null);
     }
@@ -260,27 +266,69 @@ export function ChartStage() {
     };
   };
 
-  const hitLine = (x: number, y: number): { id: string; part: "a" | "b" | "body" } | null => {
+  const hitDrawing = (x: number, y: number): { id: string; part: Handle } | null => {
     if (!view || !scale) return null;
-    let handle: { id: string; part: "a" | "b"; dist: number } | null = null;
-    let body: { id: string; dist: number } | null = null;
-    for (const line of lines) {
-      const drawn = ghost?.id === line.id ? ghost : line;
+    const pick: { handle: { id: string; part: Handle; dist: number } | null } = { handle: null };
+    let body: { id: string; dist: number; area: number } | null = null;
+    const takeHandle = (id: string, part: Handle, dist: number, limit: number) => {
+      if (dist <= limit && (pick.handle == null || dist < pick.handle.dist)) pick.handle = { id, part, dist };
+    };
+    for (const drawing of lines) {
+      const drawn = ghost?.id === drawing.id ? ghost : drawing;
+      if (isRect(drawn)) {
+        const box = rectPixels(drawn, bars, step, view, plot.plotW, scale.lo, scale.hi, plot.priceH);
+        if (!box) continue;
+        const corners: Array<[Handle, number, number]> = [
+          ["a", box.ax, box.ay],
+          ["b", box.bx, box.by],
+          ["c", box.ax, box.by],
+          ["d", box.bx, box.ay],
+        ];
+        for (const [part, cx, cy] of corners) takeHandle(drawing.id, part, Math.hypot(x - cx, y - cy), 14);
+        const left = Math.min(box.ax, box.bx);
+        const right = Math.max(box.ax, box.bx);
+        const top = Math.min(box.ay, box.by);
+        const bottom = Math.max(box.ay, box.by);
+        const inside = x >= left - 4 && x <= right + 4 && y >= top - 4 && y <= bottom + 4;
+        if (inside) {
+          const area = Math.max(1, (right - left) * (bottom - top));
+          const dist = 0;
+          if (!body || area < body.area) body = { id: drawing.id, dist, area };
+        }
+        continue;
+      }
       const px = linePixels(drawn, bars, step, view, plot.plotW, scale.lo, scale.hi, plot.priceH);
       if (!px) continue;
       const ax = xOf(timeToLogical(drawn.a.time, bars, step), view, plot.plotW);
       const ay = yOf(drawn.a.price, scale.lo, scale.hi, plot.priceH);
       const bx = xOf(timeToLogical(drawn.b.time, bars, step), view, plot.plotW);
       const by = yOf(drawn.b.price, scale.lo, scale.hi, plot.priceH);
-      const handleA = Math.hypot(x - ax, y - ay);
-      const handleB = Math.hypot(x - bx, y - by);
-      if (handleA <= 14 && (!handle || handleA < handle.dist)) handle = { id: line.id, part: "a", dist: handleA };
-      if (handleB <= 14 && (!handle || handleB < handle.dist)) handle = { id: line.id, part: "b", dist: handleB };
+      takeHandle(drawing.id, "a", Math.hypot(x - ax, y - ay), 14);
+      takeHandle(drawing.id, "b", Math.hypot(x - bx, y - by), 14);
       const along = segmentDistance(x, y, px.x1, px.y1, px.x2, px.y2);
-      if (along <= 8 && (!body || along < body.dist)) body = { id: line.id, dist: along };
+      if (along <= 8 && (!body || along < body.dist)) body = { id: drawing.id, dist: along, area: Infinity };
     }
-    if (handle) return { id: handle.id, part: handle.part };
+    if (pick.handle) return { id: pick.handle.id, part: pick.handle.part };
     return body ? { id: body.id, part: "body" } : null;
+  };
+
+  const moveCorner = (origin: Drawing, part: Handle, next: Point): Drawing => {
+    if (part === "body") return origin;
+    if (!isRect(origin) || part === "a" || part === "b") {
+      return { ...origin, [part]: next };
+    }
+    if (part === "c") {
+      return {
+        ...origin,
+        a: { time: next.time, price: origin.a.price },
+        b: { time: origin.b.time, price: next.price },
+      };
+    }
+    return {
+      ...origin,
+      a: { time: origin.a.time, price: next.price },
+      b: { time: next.time, price: origin.b.price },
+    };
   };
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -288,11 +336,11 @@ export function ChartStage() {
     const point = eventPoint(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (tool === "trend" || tool === "pick") {
+    if (tool === "trend" || tool === "rect" || tool === "pick") {
       dragRef.current = { kind: "click", startX: point.x, startY: point.y };
       return;
     }
-    const hit = hitLine(point.x, point.y);
+    const hit = hitDrawing(point.x, point.y);
     if (hit) {
       const origin = lines.find((line) => line.id === hit.id);
       if (!origin) return;
@@ -323,12 +371,14 @@ export function ChartStage() {
       const logical = logicalOf(point.x, view, plot.plotW);
       const index = Math.max(0, Math.min(bars.length - 1, Math.round(logical)));
       setHover(index);
+      setPointer({ x: point.x, y: point.y });
     } else {
       setHover(null);
+      setPointer(null);
     }
     const drag = dragRef.current;
     if (!drag) {
-      if (tool === "trend" && draft) setPreview(placePoint(point.x, point.y));
+      if ((tool === "trend" || tool === "rect") && draft) setPreview(placePoint(point.x, point.y));
       return;
     }
     if (drag.kind === "pan") {
@@ -358,10 +408,10 @@ export function ChartStage() {
       const next = snapped
         ? { time: bars[snapped.index].time, price: snapped.price }
         : { time: logicalToTime(logical, bars, step), price: rawPrice };
-      setGhost({ ...drag.origin, [drag.part]: next });
+      setGhost(moveCorner(drag.origin, drag.part, next));
       return;
     }
-    if (tool === "trend" && draft) setPreview(placePoint(point.x, point.y));
+    if ((tool === "trend" || tool === "rect") && draft) setPreview(placePoint(point.x, point.y));
   };
 
   const onPointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -371,7 +421,7 @@ export function ChartStage() {
     if (!drag || !point || !view || !scale) return;
     const moved = Math.hypot(point.x - drag.startX, point.y - drag.startY) > 5;
     if (drag.kind === "line") {
-      if (ghost) updateLine(ghost.id, { a: ghost.a, b: ghost.b, extend: ghost.extend });
+      if (ghost) updateLine(ghost.id, isRect(ghost) ? { a: ghost.a, b: ghost.b } : { a: ghost.a, b: ghost.b, extend: ghost.extend });
       setGhost(null);
       return;
     }
@@ -384,7 +434,7 @@ export function ChartStage() {
       setFollow(true);
       return;
     }
-    if (tool === "trend") {
+    if (tool === "trend" || tool === "rect") {
       const placed = placePoint(point.x, point.y);
       if (!placed) return;
       if (!draft) {
@@ -395,13 +445,17 @@ export function ChartStage() {
       if (Math.abs(placed.time - draft.time) < step / 2 && Math.abs(placed.price - draft.price) <= Math.abs(draft.price) * 1e-6) {
         return;
       }
-      addLine(draft, placed);
+      if (tool === "rect") addRect(draft, placed);
+      else addLine(draft, placed);
       setDraft(null);
       setPreview(null);
     }
   };
 
-  const onPointerLeave = () => setHover(null);
+  const onPointerLeave = () => {
+    setHover(null);
+    setPointer(null);
+  };
 
   const zoomAt = (factor: number) => {
     if (!view) return;
@@ -414,6 +468,29 @@ export function ChartStage() {
   const focus = bars[focusIndex] ?? null;
   const prev = focusIndex > 0 ? bars[focusIndex - 1] : null;
   const change = focus && prev ? ((focus.close - prev.close) / prev.close) * 100 : 0;
+  let cross: { x: number; y: number; price: number; snapped: boolean } | null = null;
+  if (pointer && view && scale && pointer.x >= 0 && pointer.x <= plot.plotW && pointer.y >= 0 && pointer.y <= plot.plotH) {
+    if (magnet && bars.length > 0 && pointer.y <= plot.priceH) {
+      const logical = logicalOf(pointer.x, view, plot.plotW);
+      const snapped = magnetPrice(logical, pointer.y, bars, scale.lo, scale.hi, plot.priceH);
+      if (snapped) {
+        cross = {
+          x: xOf(snapped.index, view, plot.plotW),
+          y: yOf(snapped.price, scale.lo, scale.hi, plot.priceH),
+          price: snapped.price,
+          snapped: true,
+        };
+      }
+    } else {
+      const y = Math.min(pointer.y, plot.priceH);
+      cross = {
+        x: pointer.x,
+        y: pointer.y,
+        price: priceOf(y, scale.lo, scale.hi, plot.priceH),
+        snapped: false,
+      };
+    }
+  }
 
   return (
     <div ref={wrapRef} className="relative h-full min-h-0 w-full">
@@ -484,6 +561,35 @@ export function ChartStage() {
             <g clipPath={`url(#${uid}-price)`}>
               {lines.map((line) => {
                 const drawn = ghost?.id === line.id ? ghost : line;
+                if (isRect(drawn)) {
+                  const box = rectPixels(drawn, bars, step, view, plot.plotW, scale.lo, scale.hi, plot.priceH);
+                  if (!box) return null;
+                  const selected = line.id === selectedId;
+                  const left = Math.min(box.ax, box.bx);
+                  const top = Math.min(box.ay, box.by);
+                  return (
+                    <g key={line.id}>
+                      <rect
+                        x={left}
+                        y={top}
+                        width={Math.abs(box.bx - box.ax)}
+                        height={Math.abs(box.by - box.ay)}
+                        fill="var(--color-accent)"
+                        fillOpacity={selected ? 0.14 : 0.08}
+                        stroke="var(--color-accent)"
+                        strokeWidth={selected ? 2 : 1.5}
+                      />
+                      {selected ? (
+                        <>
+                          <circle cx={box.ax} cy={box.ay} r={4.5} fill="var(--color-accent)" stroke="var(--color-bg)" strokeWidth={1.5} />
+                          <circle cx={box.bx} cy={box.by} r={4.5} fill="var(--color-accent)" stroke="var(--color-bg)" strokeWidth={1.5} />
+                          <circle cx={box.ax} cy={box.by} r={4.5} fill="var(--color-accent)" stroke="var(--color-bg)" strokeWidth={1.5} />
+                          <circle cx={box.bx} cy={box.ay} r={4.5} fill="var(--color-accent)" stroke="var(--color-bg)" strokeWidth={1.5} />
+                        </>
+                      ) : null}
+                    </g>
+                  );
+                }
                 const px = linePixels(drawn, bars, step, view, plot.plotW, scale.lo, scale.hi, plot.priceH);
                 if (!px) return null;
                 const selected = line.id === selectedId;
@@ -507,7 +613,20 @@ export function ChartStage() {
                   </g>
                 );
               })}
-              {draft && preview ? (
+              {draft && preview && tool === "rect" ? (
+                <rect
+                  x={Math.min(xOf(timeToLogical(draft.time, bars, step), view, plot.plotW), xOf(timeToLogical(preview.time, bars, step), view, plot.plotW))}
+                  y={Math.min(yOf(draft.price, scale.lo, scale.hi, plot.priceH), yOf(preview.price, scale.lo, scale.hi, plot.priceH))}
+                  width={Math.abs(xOf(timeToLogical(preview.time, bars, step), view, plot.plotW) - xOf(timeToLogical(draft.time, bars, step), view, plot.plotW))}
+                  height={Math.abs(yOf(preview.price, scale.lo, scale.hi, plot.priceH) - yOf(draft.price, scale.lo, scale.hi, plot.priceH))}
+                  fill="var(--color-accent)"
+                  fillOpacity={0.08}
+                  stroke="var(--color-accent)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1.5}
+                />
+              ) : null}
+              {draft && preview && tool === "trend" ? (
                 <line
                   x1={xOf(timeToLogical(draft.time, bars, step), view, plot.plotW)}
                   y1={yOf(draft.price, scale.lo, scale.hi, plot.priceH)}
@@ -519,11 +638,11 @@ export function ChartStage() {
                 />
               ) : null}
             </g>
-            {hover != null && bars[hover] ? (
+            {cross ? (
               <g pointerEvents="none">
                 <line
-                  x1={xOf(hover, view, plot.plotW)}
-                  x2={xOf(hover, view, plot.plotW)}
+                  x1={cross.x}
+                  x2={cross.x}
                   y1={0}
                   y2={plot.plotH}
                   stroke="var(--color-muted)"
@@ -533,12 +652,26 @@ export function ChartStage() {
                 <line
                   x1={0}
                   x2={plot.plotW}
-                  y1={yOf(bars[hover].close, scale.lo, scale.hi, plot.priceH)}
-                  y2={yOf(bars[hover].close, scale.lo, scale.hi, plot.priceH)}
+                  y1={cross.y}
+                  y2={cross.y}
                   stroke="var(--color-muted)"
                   strokeDasharray="2 3"
                   strokeOpacity={0.7}
                 />
+                {cross.snapped ? <circle cx={cross.x} cy={cross.y} r={3.5} fill="var(--color-accent)" /> : null}
+                {cross.y >= 0 && cross.y <= plot.priceH ? (
+                  <g>
+                    <rect x={plot.plotW} y={Math.min(plot.priceH - 16, Math.max(0, cross.y - 8))} width={plot.axisW} height={16} fill="var(--color-surface-2)" />
+                    <text
+                      x={plot.plotW + 6}
+                      y={Math.min(plot.priceH - 8, Math.max(8, cross.y))}
+                      dominantBaseline="middle"
+                      className="fill-fg font-mono text-xs"
+                    >
+                      {formatPrice(cross.price, precision)}
+                    </text>
+                  </g>
+                ) : null}
               </g>
             ) : null}
           </svg>
@@ -724,7 +857,9 @@ function ToolHint({ tool }: { tool: Tool }) {
   const text =
     tool === "pick"
       ? "Nhấp một nến để cắt tương lai và bắt đầu replay từ đó."
-      : "Nhấp điểm đầu, rồi điểm cuối. Bật nam châm để hút về giá O/H/L/C.";
+      : tool === "rect"
+        ? "Nhấp hai góc đối nhau. Nam châm bật thì hút O/H/L/C, tắt thì đặt tự do."
+        : "Nhấp hai điểm. Trendline chỉ nối hai điểm đó, không kéo thành tia.";
   return (
     <div className="pointer-events-none absolute inset-x-2 bottom-24 flex justify-center">
       <p className="max-w-md rounded-sm bg-surface/95 px-3 py-2 text-center text-sm text-fg shadow-sm">{text}</p>

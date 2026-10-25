@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronsRight, Magnet, MousePointer2, Pause, PenLine, Play, Shuffle, SkipBack, SkipForward, Target, Trash2 } from "lucide-react";
-import { SPEEDS, formatBarTime, speedMs, type Speed } from "@/lib/market";
+import { ChevronsRight, Magnet, MousePointer2, Pause, PenLine, Play, Shuffle, SkipBack, SkipForward, Square, Target, Trash2 } from "lucide-react";
+import { SPEEDS, formatBarTime, isRect, speedMs, type Speed } from "@/lib/market";
 import { useActiveLines, useTerminal } from "@/lib/store";
 
 export function ReplayDock() {
@@ -32,6 +32,7 @@ export function ReplayDock() {
   }, []);
 
   const selected = lines.find((line) => line.id === selectedId) ?? null;
+  const trendSelected = selected && !isRect(selected) ? selected : null;
   const atEnd = total === 0 || cursor >= total - 1;
   const left = Math.max(0, total - 1 - cursor);
   const ready = status === "ready" && total > 1;
@@ -75,6 +76,9 @@ export function ReplayDock() {
         <DockButton label="Trendline" pressed={tool === "trend"} onClick={() => setTool("trend")}>
           <PenLine className="size-4" />
         </DockButton>
+        <DockButton label="Hình chữ nhật" pressed={tool === "rect"} onClick={() => setTool("rect")}>
+          <Square className="size-4" />
+        </DockButton>
         <DockButton label="Chọn nến bắt đầu" pressed={tool === "pick"} onClick={() => setTool("pick")}>
           <Target className="size-4" />
         </DockButton>
@@ -110,17 +114,19 @@ export function ReplayDock() {
         {selected ? (
           <>
             <span className="mx-1 h-6 w-px shrink-0 bg-border" />
-            <button
-              type="button"
-              aria-pressed={selected.extend}
-              onClick={toggleExtend}
-              className={`inline-flex h-8 shrink-0 items-center rounded-sm border px-2 text-xs ${
-                selected.extend ? "border-accent text-accent" : "border-border text-muted"
-              }`}
-            >
-              Kéo dài
-            </button>
-            <DockButton label="Xóa trendline" onClick={deleteSelected}>
+            {trendSelected ? (
+              <button
+                type="button"
+                aria-pressed={trendSelected.extend}
+                onClick={toggleExtend}
+                className={`inline-flex h-8 shrink-0 items-center rounded-sm border px-2 text-xs ${
+                  trendSelected.extend ? "border-accent text-accent" : "border-border text-muted"
+                }`}
+              >
+                Kéo dài
+              </button>
+            ) : null}
+            <DockButton label="Xóa bản vẽ" onClick={deleteSelected}>
               <Trash2 className="size-4" />
             </DockButton>
           </>

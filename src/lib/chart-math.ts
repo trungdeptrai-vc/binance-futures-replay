@@ -227,7 +227,7 @@ export function magnetPrice(
       best = price;
     }
   }
-  const price = bestD <= 22 ? best : priceOf(y, lo, hi, priceH);
+  const price = best;
   return { index, price };
 }
 
@@ -286,4 +286,23 @@ export function linePixels(
     y2 = end.y;
   }
   return { x1, y1, x2, y2 };
+}
+
+export function rectPixels(
+  drawing: { a: Point; b: Point },
+  bars: Candle[],
+  step: number,
+  view: View,
+  plotW: number,
+  lo: number,
+  hi: number,
+  priceH: number,
+): { ax: number; ay: number; bx: number; by: number } | null {
+  if (bars.length === 0) return null;
+  return {
+    ax: xOf(timeToLogical(drawing.a.time, bars, step), view, plotW),
+    ay: yOf(drawing.a.price, lo, hi, priceH),
+    bx: xOf(timeToLogical(drawing.b.time, bars, step), view, plotW),
+    by: yOf(drawing.b.price, lo, hi, priceH),
+  };
 }

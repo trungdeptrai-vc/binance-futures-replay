@@ -22,6 +22,19 @@ export type Trendline = {
   extend: boolean;
 };
 
+export type RectDrawing = {
+  id: string;
+  kind: "rect";
+  a: Point;
+  b: Point;
+};
+
+export type Drawing = Trendline | RectDrawing;
+
+export function isRect(drawing: Drawing): drawing is RectDrawing {
+  return "kind" in drawing && drawing.kind === "rect";
+}
+
 export const SPEEDS = [1, 2, 3, 5, 10] as const;
 export type Speed = (typeof SPEEDS)[number];
 
